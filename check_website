@@ -1,0 +1,129 @@
+#!/bin/bash
+
+# Script version
+SCRIPT_VERSION="check_website - John Gonzalez - v1.0.0"
+
+# Default variables
+SSL_PORT=443
+PING_THRESHOLD=100
+SSL_EXPIRY_THRESHOLD=30
+CHECK_INTERVAL=5
+
+# Script usage
+usage() {
+    echo "Usage: $0 -H <host> -p <ping_threshold> -s <ssl_expiry_threshold> -i <check_interval> -P <ssl_port>"
+    echo "Options:"
+    echo "  -H <host>                 Website to test (without http(s)://, e.g.: google.com)"
+    echo "  -p <ping_threshold>       Ping threshold (in ms)"
+    echo "  -s <ssl_expiry_threshold> Certificate expiration alert threshold (in days)"
+    echo "  -i <check_interval>       Interval between the checks (in seconds)"
+    echo "  -P <ssl_port>             Port to test (default 443)"
+    echo "  -h                        Show usage"
+    echo "  -v                        Show version"
+    exit 1
+}
+
+# Options management
+while getopts "H:p:s:i:P:hv" opt; do
+  case ${opt} in
+    H )
+      HOST=$OPTARG
+      ;;
+    p )
+      PING_THRESHOLD=$OPTARG
+      ;;
+    s )
+      SSL_EXPIRY_THRESHOLD=$OPTARG
+      ;;
+    i )
+      CHECK_INTERVAL=$OPTARG
+      ;;
+    P )
+      SSL_PORT=$OPTARG
+      ;;
+    h )
+      usage
+      ;;
+    v )
+      echo "$SCRIPT_VERSION"
+      exit 0
+      ;;
+    \? )
+      usage
+      ;;
+  esac
+done
+
+# Vérify if website is specified
+if [ -z "$HOST" ]; then
+    echo "Error: Website not specified."
+    usage
+fi
+
+# Exit message init
+output_message=""
+exit_status=0
+
+# Function to check ping
+check_ping() {
+    local ping_time=$(ping -c 1 $HOST | grep time= | awk -F"time=" '{print $2}' | awk -F" " '{print $1}' | cut -d'.' -f1)
+    if [ $? -eq 0 ]; then
+        output_message+="Ping OK - Response time: ${ping_time}ms. "
+    else
+        output_message+="Ping CRITICAL - Response time: ${ping_time}ms."
+        exit_status=2
+    fi
+}
+
+# Function to check HTTPS connection
+check_https() {
+    # First check with signed certificate case
+    local https_status=$(curl -s -o /dev/null -w "%{http_code}" -L https://$HOST:$SSL_PORT)
+
+    # If status code is 000, this can be a failed certificate check
+    if [ "$https_status" == "000" ]; then
+        # Check with disabled certificate check (possibly auto-signed certificate)
+        https_status=$(curl -s -o /dev/null -w "%{http_code}" -L --insecure https://$HOST:$SSL_PORT)
+        if [ "$https_status" == "200" ]; then
+            output_message+="HTTPS OK (auto-signed certificate) - Status code $https_status on port $SSL_PORT. "
+        else
+            output_message+="HTTPS CRITICAL - Status code $https_status on port $SSL_PORT after auto-signed certificate check "
+            exit_status=2
+        fi
+    elif [ "$https_status" == "200" ]; then
+        output_message+="HTTPS OK - Status code $https_status on port $SSL_PORT. "
+    else
+        output_message+="HTTPS CRITICAL - Status code $https_status on port $SSL_PORT. "
+        exit_status=2
+    fi
+}
+
+# Function to check certificate expiration
+check_ssl_expiry() {
+    local ssl_expiry_date=$(echo | openssl s_client -servername $HOST -connect $HOST:$SSL_PORT 2>/dev/null | openssl x509 -noout -dates 2>/dev/null | grep 'notAfter' | sed 's/notAfter=//')
+    if [ -z "$ssl_expiry_date" ]; then
+        output_message+="SSL CRITICAL - No possibility to check the expiration on port $SSL_PORT. "
+        exit_status=2
+    else
+        local ssl_expiry_seconds=$(date -d "$ssl_expiry_date" +%s)
+        local current_seconds=$(date +%s)
+        local ssl_days_left=$(( ($ssl_expiry_seconds - $current_seconds) / 86400 ))
+        if [ $ssl_days_left -gt $SSL_EXPIRY_THRESHOLD ]; then
+            output_message+="SSL OK - Expiration in $ssl_days_left days. "
+        else
+            output_message+="SSL CRITICAL - Expiration in $ssl_days_left days. "
+            exit_status=2
+        fi
+    fi
+}
+
+# Checks executions
+check_ping
+sleep $CHECK_INTERVAL
+check_https
+sleep $CHECK_INTERVAL
+check_ssl_expiry
+
+# Exit messages
+echo $output_message
+exit $exit_status
