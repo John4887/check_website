@@ -3,7 +3,7 @@ This Nagios plugin is able to get the health state of a website.
 Functionalities :
 
 - Ping test ;
-- HTTPS access availabilty (supports 301 redirections) ;
+- HTTPS access availabilty (supports 301 redirections and non-default ports) ;
 - SSL Certificate status.
 
 Use it like this:
